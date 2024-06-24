@@ -51,7 +51,7 @@ local M = {}
 ---@param cmd string
 ---@param target string
 ---@param on_attach function
----@param capabilities table
+---@param capabilities lsp.ClientCapabilities
 function M.spawn(cmd, target, settings, on_exit, on_attach, capabilities)
 	local data_path = vim.fn.stdpath("data") --[[@as string]]
 	local server_path = vim.fs.joinpath(data_path, "roslyn", "Microsoft.CodeAnalysis.LanguageServer.dll")
@@ -78,21 +78,24 @@ function M.spawn(cmd, target, settings, on_exit, on_attach, capabilities)
 
 	local target_uri = vim.uri_from_fname(target)
 
-	-- capabilities = vim.tbl_deep_extend("force", capabilities, {
-	-- 	workspace = {
-	-- 		didChangeWatchedFiles = {
-	-- 			dynamicRegistration = false,
-	-- 		},
-	-- 	},
-	-- })
+	---@type lsp.ClientCapabilities
+	local overwritten_cap = {
+		textDocument = {
+			diagnostic = {
+				dynamicRegistration = true,
+			},
+			hover = {
+				contentFormat = { "markdown" },
+			},
+		},
+		workspace = {
+			didChangeWatchedFiles = {
+				dynamicRegistration = true,
+			},
+		},
+	}
 
-    capabilities = vim.tbl_deep_extend("force", capabilities, {
-        textDocument = {
-            hover = {
-                contentFormat = { "markdown" },
-            },
-        }
-    })
+	capabilities = vim.tbl_deep_extend("force", capabilities, overwritten_cap)
 
 	local spawned = RoslynClient.new(target)
 
@@ -142,10 +145,60 @@ function M.spawn(cmd, target, settings, on_exit, on_attach, capabilities)
 				vim.notify("Roslyn project initialization complete", vim.log.levels.INFO)
 				spawned:initialize()
 			end,
-            ["workspace/_roslyn_projectHasUnresolvedDependencies"] = function()
-                vim.notify("Detected missing dependencies. Run dotnet restore command.", vim.log.levels.ERROR)
-                return vim.NIL
-            end,
+			["workspace/_roslyn_projectHasUnresolvedDependencies"] = function()
+				vim.notify("Detected missing dependencies. Run dotnet restore command.", vim.log.levels.ERROR)
+				return vim.NIL
+			end,
+			["workspace/_roslyn_projectNeedsRestore"] = function()
+				vim.notify("Detected missing dependencies. Run dotnet restore command.", vim.log.levels.ERROR)
+				return vim.NIL
+			end,
+		},
+		commands = {
+			["roslyn.client.fixAllCodeAction"] = function(command, ctx)
+				local data = assert(command.arguments[1])
+
+				vim.ui.select(data.FixAllFlavors, {
+					prompt = data.UniqueIdentifier,
+				}, function(item, _)
+					if item == nil then
+						return
+					end
+
+					local client = assert(vim.lsp.get_client_by_id(ctx.client_id), "Roslyn LSP is down")
+					---@type lsp.CodeAction
+					local params = vim.tbl_extend("force", ctx.params, {
+						scope = item,
+						data = data,
+					})
+					client.rpc.request("codeAction/resolveFixAll", params, function(err, result)
+						if err ~= nil then
+							error(err.message)
+						end
+						vim.lsp.util.apply_workspace_edit(result.edit, "utf-8")
+					end)
+				end)
+			end,
+			["roslyn.client.nestedCodeAction"] = function(command, ctx)
+				local nested_actions = command.arguments[1].NestedCodeActions
+
+				vim.ui.select(nested_actions, {
+					prompt = command.title,
+					format_item = function(nested_action)
+						return nested_action.title
+					end,
+				}, function(code_action, _)
+					local client = assert(vim.lsp.get_client_by_id(ctx.client_id), "Roslyn LSP is down")
+					client.rpc.request(vim.lsp.protocol.Methods.codeAction_resolve, code_action, function(err, result)
+						if err ~= nil then
+							error(err.message)
+						end
+						if result.edit then
+							vim.lsp.util.apply_workspace_edit(result.edit, "utf-8")
+						end
+					end)
+				end)
+			end,
 		},
 		on_exit = on_exit,
 	})

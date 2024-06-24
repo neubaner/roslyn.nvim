@@ -53,7 +53,7 @@ end
 
 function M.wrap_server_cmd(cmd_fn)
 	return function(...)
-		return M.wrap_rpc_client(cmd_fn(...))
+		return cmd_fn(...)
 	end
 end
 
